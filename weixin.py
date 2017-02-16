@@ -10,18 +10,20 @@ import cookielib
 import urlparse
 
 class MyRequest():
-    def __init__(self):
-        cj = cookielib.LWPCookieJar()
-        cookieSupport = urllib2.HTTPCookieProcessor(cj)
-        opener = urllib2.build_opener(cookieSupport, urllib2.HTTPHandler)
-        urllib2.install_opener(opener)
+    cj = cookielib.LWPCookieJar()
+    cookieSupport = urllib2.HTTPCookieProcessor(cj)
+    opener = urllib2.build_opener(cookieSupport, urllib2.HTTPHandler)
+    urllib2.install_opener(opener)
 
-    def post(self, url, data, timeout=5):
+    def __init__(self):
+        pass
+
+    def post(self, url, data, timeout=10):
         request = urllib2.Request(url, data)
         request = self.addHeader(request)
         return urllib2.urlopen(request, timeout=timeout).read()
 
-    def get(self, url, timeout=5):
+    def get(self, url, timeout=10):
         request = urllib2.Request(url)
         request = self.addHeader(request)
         return urllib2.urlopen(request, timeout=timeout).read()
@@ -54,7 +56,6 @@ class WeixinLogin():
 
     def getQRCode(self, UUID):
         url = "https://login.weixin.qq.com/qrcode/%s?t=webwx" % UUID
-        print url
         body = self.request.get(url)
         QRcodeJpg = open("./%s.jpg" % UUID, "w")
         QRcodeJpg.write(body)
@@ -68,7 +69,6 @@ class WeixinLogin():
 
     def waitingScan(self, UUID):
         url = self.genGetStatusUrl(UUID)
-        print url 
         while True:
             try:
                 body = self.request.get(url, 1)
@@ -94,8 +94,8 @@ class WeixinLogin():
         return body
 
     def getwxsidAndwxuin(self, body):
-        m = re.search('.*?<skey>(.*?)</skey><wxsid>(.*?)</wxsid><wxuin>(.*?)</wxuin>.*', body)
-        return  {"skey": m.group(1), "wxsid": m.group(2), "wxuin": m.group(3)} if m else None
+        m = re.search('.*?<skey>(.*?)</skey><wxsid>(.*?)</wxsid><wxuin>(.*?)</wxuin><pass_ticket>(.*?)</pass_ticket>.*', body)
+        return  {"skey": m.group(1), "wxsid": m.group(2), "wxuin": m.group(3), "pass_ticket": m.group(4)} if m else None
 
 
 class Weixin():
@@ -105,24 +105,77 @@ class Weixin():
         self.skey = key['skey']
         self.wxsid = key['wxsid']
         self.wxuin = key['wxuin']
+        self.pass_ticket = key['pass_ticket']
+        self.deviceid = "e1615250492"
+        self.syncKey = ''
+        self.syncKeyList = ''
+        self.baseRequest = {'Uin': self.wxuin, 
+                            "Sid": self.wxsid, 
+                            "Skey": "", 
+                            "DeviceID": self.deviceid
+                           }
+
+    def wxsync(self):
+        uri = "/cgi-bin/mmwebwx-bin/webwxsync?"
+        queryDict['sid'] = self.sid
+        queryDict['skey'] = self.skey
+        queryDict['uin'] = self.wxuin 
+        queryDict['sid'] = self.wxsid
 
     def syncMsg(self):
         queryTuple = {'r': int(time.time())}
         query = urllib.urlencode(queryTuple)
         uri = "/cgi-bin/mmwebwx-bin/webwxinit?"
         url = "%s%s%s" % (self.domain, uri, query)
-        print url
-
-        data = json.dumps({'BaseRequest': 
-                    {'Uin': self.wxuin, 
-                     "Sid": self.wxsid, 
-                     "Skey": "", 
-                     "DeviceID": "e1615250492"
-                    }
-                })
-        print data
+        data = json.dumps({'BaseRequest': self.baseRequest})
         body = self.request.post(url, data)
-        print body
+        return json.loads(body)
+
+    def setSyncKey(self, message):
+        syncKey = ""
+        for item in message['SyncKey']['List']:
+            syncKey += "%s_%s|" % (item['Key'], item['Val'])
+        
+        self.syncKey = syncKey.rstrip('|')
+        self.syncKeyList = message['SyncKey']
+    
+    def webwxsync(self):
+        uri = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxsync?"
+        queryDict = {}
+        queryDict['sid'] = self.wxsid
+        queryDict['skey'] = self.skey
+        queryDict['lang'] = "zh_CN" 
+        queryDict['pass_ticket'] = self.pass_ticket
+        queryString = urllib.urlencode(queryDict)
+        url = "%s%s" % (uri, queryString)
+        data = {
+                "BaseRequest": self.baseRequest,
+                "SyncKey": self.syncKeyList,
+                "rr": ~int(time.time()) 
+        }
+        print url
+        print data
+        print self.request.post(url, urllib.urlencode(data))
+        
+
+    def poll(self):
+        uri = "https://webpush.wx.qq.com/cgi-bin/mmwebwx-bin/synccheck?"
+        queryDict = {}
+        queryDict['r'] = int(time.time())
+        queryDict['skey'] = self.skey
+        queryDict['uin'] = self.wxuin 
+        queryDict['sid'] = self.wxsid
+        queryDict['deviceid'] = self.deviceid
+        queryDict['synckey'] =  self.syncKey
+        queryDict['_'] = int(time.time())
+        queryString = urllib.urlencode(queryDict)
+        url = "%s%s" % (uri, queryString)
+        print url
+        while True:
+            body = self.request.get(url)
+            if body == 'window.synccheck={retcode:"0",selector:"2"}':
+                self.webwxsync()
+            time.sleep(2)
 
 
 def main():
@@ -138,7 +191,10 @@ def main():
     loginRetXml = login.newLogin(url)
     print "登陆成功:)"
     key = login.getwxsidAndwxuin(loginRetXml)
+    print key
     weixin = Weixin(key)
-    weixin.syncMsg()
+    message = weixin.syncMsg()
+    weixin.setSyncKey(message)
+    weixin.poll()
 
 main()
