@@ -7,7 +7,7 @@ import json
 import urllib
 import urllib2
 import cookielib
-import urlparse
+import random
 
 class MyRequest():
     cj = cookielib.LWPCookieJar()
@@ -62,7 +62,7 @@ class WeixinLogin():
         QRcodeJpg.close()
 
     def genGetStatusUrl(self, UUID):
-        data = {"uuid": UUID, "tip": "1", "_": "1388975894359"}
+        data = {"uuid": UUID, "tip": "1", "_": int(time.time()), "r": random.random()}
         uri =  "/cgi-bin/mmwebwx-bin/login?"
         url = "%s%s%s" % (self.domain, uri, urllib.urlencode(data))
         return url
@@ -72,8 +72,7 @@ class WeixinLogin():
         while True:
             try:
                 body = self.request.get(url, 1)
-                if body == "window.code=201;":  # 二维码被扫描
-                    break
+                if body == "window.code=201;":  break #二维码被扫描
             except Exception, e:
                 continue
 
@@ -108,43 +107,48 @@ class Weixin():
         self.pass_ticket = key['pass_ticket']
         self.deviceid = "e1615250492"
         self.syncKey = ''
-        self.syncKeyList = ''
+        self.syncKeyList = []
         self.baseRequest = {'Uin': self.wxuin, 
                             "Sid": self.wxsid, 
-                            "Skey": "", 
+                            "Skey": self.skey, 
                             "DeviceID": self.deviceid
                            }
+        self.user = []
 
-    def wxsync(self):
-        uri = "/cgi-bin/mmwebwx-bin/webwxsync?"
-        queryDict['sid'] = self.sid
-        queryDict['skey'] = self.skey
-        queryDict['uin'] = self.wxuin 
-        queryDict['sid'] = self.wxsid
-
-    def syncMsg(self):
-        queryTuple = {'r': int(time.time())}
+    def winit(self):
+        queryTuple = {"r": int(time.time())}
         query = urllib.urlencode(queryTuple)
         uri = "/cgi-bin/mmwebwx-bin/webwxinit?"
         url = "%s%s%s" % (self.domain, uri, query)
         data = json.dumps({'BaseRequest': self.baseRequest})
         body = self.request.post(url, data)
-        return json.loads(body)
+        self.__setSyncInfo(body)
 
-    def setSyncKey(self, message):
+    def __setSyncInfo(self, message):
         syncKey = ""
+        message = json.loads(message)
         for item in message['SyncKey']['List']:
             syncKey += "%s_%s|" % (item['Key'], item['Val'])
         
         self.syncKey = syncKey.rstrip('|')
         self.syncKeyList = message['SyncKey']
+        self.user = message['User']
+    
+    def wxStatusNotify(self):
+        url = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxstatusnotify?lang=Zh_cn&pass_ticket=%s" % \
+              self.pass_ticket
+        data = {"BaseRequest": self.baseRequest,
+                "Code": 3,
+                "FromUserName": self.user['UserName'],
+                "ToUserName": self.user['UserName'],
+                "ClientMsgId": 1487289439163}
+        self.request.post(url, json.dumps(data))
     
     def webwxsync(self):
         uri = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxsync?"
         queryDict = {}
         queryDict['sid'] = self.wxsid
         queryDict['skey'] = self.skey
-        queryDict['lang'] = "zh_CN" 
         queryDict['pass_ticket'] = self.pass_ticket
         queryString = urllib.urlencode(queryDict)
         url = "%s%s" % (uri, queryString)
@@ -153,9 +157,8 @@ class Weixin():
                 "SyncKey": self.syncKeyList,
                 "rr": ~int(time.time()) 
         }
-        print url
-        print data
-        print self.request.post(url, urllib.urlencode(data))
+        body  = json.loads(self.request.post(url, json.dumps(data)))
+        self.syncKeyList = body['SyncKey']
         
 
     def poll(self):
@@ -170,7 +173,6 @@ class Weixin():
         queryDict['_'] = int(time.time())
         queryString = urllib.urlencode(queryDict)
         url = "%s%s" % (uri, queryString)
-        print url
         while True:
             body = self.request.get(url)
             if body == 'window.synccheck={retcode:"0",selector:"2"}':
@@ -191,10 +193,9 @@ def main():
     loginRetXml = login.newLogin(url)
     print "登陆成功:)"
     key = login.getwxsidAndwxuin(loginRetXml)
-    print key
     weixin = Weixin(key)
-    message = weixin.syncMsg()
-    weixin.setSyncKey(message)
+    message = weixin.winit()
+    weixin.wxStatusNotify()
     weixin.poll()
 
 main()
