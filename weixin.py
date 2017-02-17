@@ -1,6 +1,7 @@
 #!/bin/python
 # -*- coding: utf-8
 
+import os
 import re
 import time
 import json
@@ -40,35 +41,36 @@ class WeixinLogin():
     def __init__(self): 
         self.domain = "https://login.weixin.qq.com"
         self.request = MyRequest()
+        self.UUID = ''
 
-    def getUUID(self):
+    def wxNewLoginPage(self):
         data = {}
         data['appid'] = 'wx782c26e4c19acffb'
         data['redirect_uri'] = 'https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxnewloginpage'
         data['fun'] = 'new'
-        data['lang'] = 'zh_CN'
-        data['_'] = '1388994062250'
+        data['_'] = int(time.time())
         uri = "/jslogin?"
         url = "%s%s%s" % (self.domain, uri, urllib.urlencode(data))
         body = self.request.get(url)
         m = re.search('.*?uuid = \\"(.*?)\\"', body)
-        return m.group(1)
+        self.UUID =  m.group(1)
 
-    def getQRCode(self, UUID):
-        url = "https://login.weixin.qq.com/qrcode/%s?t=webwx" % UUID
+
+    def getQRCode(self):
+        url = "https://login.weixin.qq.com/qrcode/%s?t=webwx" % self.UUID
         body = self.request.get(url)
-        QRcodeJpg = open("./%s.jpg" % UUID, "w")
+        QRcodeJpg = open("./%s.jpg" % self.UUID, "w")
         QRcodeJpg.write(body)
         QRcodeJpg.close()
 
-    def genGetStatusUrl(self, UUID):
-        data = {"uuid": UUID, "tip": "1", "_": int(time.time()), "r": random.random()}
+    def genGetStatusUrl(self):
+        data = {"uuid": self.UUID, "tip": "1", "_": int(time.time()), "r": random.random()}
         uri =  "/cgi-bin/mmwebwx-bin/login?"
         url = "%s%s%s" % (self.domain, uri, urllib.urlencode(data))
         return url
 
-    def waitingScan(self, UUID):
-        url = self.genGetStatusUrl(UUID)
+    def waitingScan(self):
+        url = self.genGetStatusUrl()
         while True:
             try:
                 body = self.request.get(url, 1)
@@ -76,8 +78,8 @@ class WeixinLogin():
             except Exception, e:
                 continue
 
-    def getScanRet(self, UUID):
-        url = self.genGetStatusUrl(UUID)
+    def getScanRet(self):
+        url = self.genGetStatusUrl()
         while True:
             body = self.request.get(url)
             if body != "window.code=201;": break
@@ -96,6 +98,20 @@ class WeixinLogin():
         m = re.search('.*?<skey>(.*?)</skey><wxsid>(.*?)</wxsid><wxuin>(.*?)</wxuin><pass_ticket>(.*?)</pass_ticket>.*', body)
         return  {"skey": m.group(1), "wxsid": m.group(2), "wxuin": m.group(3), "pass_ticket": m.group(4)} if m else None
 
+    def login(self):
+        self.wxNewLoginPage()
+        self.getQRCode()
+        print "下载二维码[%s.jpg],请扫描." % (self.UUID)
+        self.waitingScan()
+        print "扫描完成,请在手机确认登陆."
+        body  = self.getScanRet()
+        url = self.getScanRetRedirectUrl(body)
+        print "开始登陆..."
+        loginRetXml = self.newLogin(url)
+        print "登陆成功:)"
+        key = self.getwxsidAndwxuin(loginRetXml)
+        return key
+
 
 class Weixin():
     def __init__(self, key):
@@ -108,11 +124,12 @@ class Weixin():
         self.deviceid = "e1615250492"
         self.syncKey = ''
         self.syncKeyList = []
-        self.baseRequest = {'Uin': self.wxuin, 
-                            "Sid": self.wxsid, 
-                            "Skey": self.skey, 
-                            "DeviceID": self.deviceid
-                           }
+        self.baseRequest = {
+            'Uin': self.wxuin, 
+            "Sid": self.wxsid, 
+            "Skey": self.skey, 
+            "DeviceID": self.deviceid
+        }
         self.user = []
         self.seq = 0
         self.members = {}
@@ -137,11 +154,13 @@ class Weixin():
     def wxStatusNotify(self):
         url = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxstatusnotify?lang=Zh_cn&pass_ticket=%s" % \
               self.pass_ticket
-        data = {"BaseRequest": self.baseRequest,
-                "Code": 3,
-                "FromUserName": self.user['UserName'],
-                "ToUserName": self.user['UserName'],
-                "ClientMsgId": 1487289439163}
+        data = {
+            "BaseRequest": self.baseRequest,
+            "Code": 3,
+            "FromUserName": self.user['UserName'],
+            "ToUserName": self.user['UserName'],
+            "ClientMsgId": 1487289439163
+        }
         self.request.post(url, json.dumps(data))
 
     def __changeSeq(self, body):
@@ -172,9 +191,9 @@ class Weixin():
         queryString = urllib.urlencode(queryDict)
         url = "%s%s" % (uri, queryString)
         data = {
-                "BaseRequest": self.baseRequest,
-                "SyncKey": self.syncKeyList,
-                "rr": ~int(time.time()) 
+            "BaseRequest": self.baseRequest,
+            "SyncKey": self.syncKeyList,
+            "rr": ~int(time.time()) 
         }
         body  = json.loads(self.request.post(url, json.dumps(data)))
         self.syncKeyList = body['SyncKey']
@@ -182,7 +201,15 @@ class Weixin():
                     str(item['Val']) for item in self.syncKeyList['List']])
         for msg in body['AddMsgList']:
             print "from[%s]->to[%s], content[%s]" % (self.members[msg['FromUserName']], self.members[msg['ToUserName']], msg['Content'])
-        
+            if self.__isRedPacket(msg['Content']):
+                self.__redPacketNotify(self.members[msg['FromUserName']])
+
+    def __isRedPacket(self, content):
+        m = re.search(u".*收到红包，请在手机上查看.*", content)
+        return True if m else False
+
+    def __redPacketNotify(self, f):
+        os.system("notify-send --icon=gtk-info 红包提醒 '收到来自%s的红包'" % f)
 
     def poll(self):
         uri = "https://webpush.wx.qq.com/cgi-bin/mmwebwx-bin/synccheck?"
@@ -205,24 +232,15 @@ class Weixin():
                 pass
             time.sleep(1)
 
+    def run(self):
+        self.winit()
+        self.wxGetConcat()
+        self.wxStatusNotify()
+        weixin.poll()
 
-def main():
-    login = WeixinLogin()
-    UUID = login.getUUID()
-    login.getQRCode(UUID)
-    print "下载二维码[%s.jpg],请扫描." % (UUID)
-    login.waitingScan(UUID)
-    print "扫描完成,请在手机确认登陆."
-    body  = login.getScanRet(UUID)
-    url = login.getScanRetRedirectUrl(body)
-    print "开始登陆..."
-    loginRetXml = login.newLogin(url)
-    print "登陆成功:)"
-    key = login.getwxsidAndwxuin(loginRetXml)
+
+if __name__ == '__main__':
+    wxlogin = WeixinLogin()
+    key = wxlogin.login()
     weixin = Weixin(key)
-    weixin.winit()
-    weixin.wxGetConcat()
-    weixin.wxStatusNotify()
-    weixin.poll()
-
-main()
+    weixin.run()
