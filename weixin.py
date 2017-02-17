@@ -133,6 +133,7 @@ class Weixin():
         self.user = []
         self.seq = 0
         self.members = {}
+        self.group = {}
 
     def winit(self):
         queryTuple = {"r": int(time.time())}
@@ -168,6 +169,8 @@ class Weixin():
 
     def __setMembers(self, body):
         for item in body['MemberList']:
+            if '@@' in item['UserName']:
+                print item['UserName']
             self.members[item['UserName']] = item['NickName']
 
     def wxGetConcat(self):
@@ -175,12 +178,11 @@ class Weixin():
         queryDict = {}
         queryDict['pass_ticket'] = self.pass_ticket
         queryDict['r'] = int(time.time())
-        queryDict['seq'] = 0
         queryDict['skey'] = self.skey
         url = "%s%s" % (uri, urllib.urlencode(queryDict))
         body = json.loads(self.request.get(url))
-        self.__changeSeq(body)
         self.__setMembers(body)
+        self.__changeSeq(body)
     
     def webwxsync(self):
         uri = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxsync?"
@@ -200,9 +202,40 @@ class Weixin():
         self.syncKey = '|'.join([str(item['Key']) + '_' + \
                     str(item['Val']) for item in self.syncKeyList['List']])
         for msg in body['AddMsgList']:
-            print "from[%s]->to[%s], content[%s]" % (self.members[msg['FromUserName']], self.members[msg['ToUserName']], msg['Content'])
+            if '@@' in msg['FromUserName']:
+                self.wxBatchGetContact(msg['FromUserName'])
+                sender, content = msg['Content'].split(":<br/>")
+                print "from[(%s)%s]->to[%s], content[%s]" % \
+                        (self.group[msg['FromUserName']]['name'], 
+                         self.group[msg['FromUserName']]['members'][sender], 
+                         self.members[msg['ToUserName']], 
+                         content)
+            elif '@@' in msg['ToUserName']:
+                self.wxBatchGetContact(msg['ToUserName'])
+                print "from[%s]->to[%s], content[%s]" % \
+                        (self.members[msg['FromUserName']], self.group[msg['ToUserName']]['name'], msg['Content'])
+            else:
+                print "from[%s]->to[%s], content[%s]" % (self.members[msg['FromUserName']], self.members[msg['ToUserName']], msg['Content'])
             if self.__isRedPacket(msg['Content']):
                 self.__redPacketNotify(self.members[msg['FromUserName']])
+
+
+    def wxBatchGetContact(self, username):
+        url = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxbatchgetcontact?type=ex&r=%s&pass_ticket=%s" % \
+                (int(time.time()), self.pass_ticket)
+        data = json.dumps({
+            "BaseRequest": self.baseRequest,
+            "Count": 1,
+            "List": [{"UserName": username, "EncryChatRoomId": ""}]
+        })
+        body = json.loads(self.request.post(url, data))
+        val = {}
+        val['name'] = body['ContactList'][0]['NickName']
+        val['members'] = {}
+        for item in body['ContactList'][0]['MemberList']:
+            val['members'][item['UserName']] = item['NickName']
+        self.group[username] = val
+
 
     def __isRedPacket(self, content):
         m = re.search(u".*收到红包，请在手机上查看.*", content)
@@ -214,22 +247,23 @@ class Weixin():
     def poll(self):
         uri = "https://webpush.wx.qq.com/cgi-bin/mmwebwx-bin/synccheck?"
         queryDict = {}
-        queryDict['r'] = int(time.time())
         queryDict['skey'] = self.skey
         queryDict['uin'] = self.wxuin 
         queryDict['sid'] = self.wxsid
         queryDict['deviceid'] = self.deviceid
-        queryDict['_'] = int(time.time())
         while True:
+            queryDict['r'] = int(time.time())
             queryDict['synckey'] =  self.syncKey
+            queryDict['_'] = int(time.time())
             queryString = urllib.urlencode(queryDict)
             url = "%s%s" % (uri, queryString)
             try:
-                body = self.request.get(url)
-                if body == 'window.synccheck={retcode:"0",selector:"2"}':
-                    self.webwxsync()
+                body = self.request.get(url, timeout=60)
             except Exception,e:
                 pass
+            finally:
+                if body == 'window.synccheck={retcode:"0",selector:"2"}':
+                    self.webwxsync()
             time.sleep(1)
 
     def run(self):
