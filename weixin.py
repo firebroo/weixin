@@ -114,6 +114,8 @@ class Weixin():
                             "DeviceID": self.deviceid
                            }
         self.user = []
+        self.seq = 0
+        self.members = {}
 
     def winit(self):
         queryTuple = {"r": int(time.time())}
@@ -125,14 +127,12 @@ class Weixin():
         self.__setSyncInfo(body)
 
     def __setSyncInfo(self, message):
-        syncKey = ""
         message = json.loads(message)
-        for item in message['SyncKey']['List']:
-            syncKey += "%s_%s|" % (item['Key'], item['Val'])
-        
-        self.syncKey = syncKey.rstrip('|')
         self.syncKeyList = message['SyncKey']
+        self.syncKey = '|'.join([str(keyVal['Key']) + '_' + \
+                str(keyVal['Val']) for keyVal in self.syncKeyList['List']])
         self.user = message['User']
+        self.members[self.user['UserName']] = self.user['NickName']
     
     def wxStatusNotify(self):
         url = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxstatusnotify?lang=Zh_cn&pass_ticket=%s" % \
@@ -143,6 +143,25 @@ class Weixin():
                 "ToUserName": self.user['UserName'],
                 "ClientMsgId": 1487289439163}
         self.request.post(url, json.dumps(data))
+
+    def __changeSeq(self, body):
+        self.seq = body['Seq']
+
+    def __setMembers(self, body):
+        for item in body['MemberList']:
+            self.members[item['UserName']] = item['NickName']
+
+    def wxGetConcat(self):
+        uri = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxgetcontact?"
+        queryDict = {}
+        queryDict['pass_ticket'] = self.pass_ticket
+        queryDict['r'] = int(time.time())
+        queryDict['seq'] = 0
+        queryDict['skey'] = self.skey
+        url = "%s%s" % (uri, urllib.urlencode(queryDict))
+        body = json.loads(self.request.get(url))
+        self.__changeSeq(body)
+        self.__setMembers(body)
     
     def webwxsync(self):
         uri = "https://wx.qq.com/cgi-bin/mmwebwx-bin/webwxsync?"
@@ -159,6 +178,10 @@ class Weixin():
         }
         body  = json.loads(self.request.post(url, json.dumps(data)))
         self.syncKeyList = body['SyncKey']
+        self.syncKey = '|'.join([str(item['Key']) + '_' + \
+                    str(item['Val']) for item in self.syncKeyList['List']])
+        for msg in body['AddMsgList']:
+            print "from[%s]->to[%s], content[%s]" % (self.members[msg['FromUserName']], self.members[msg['ToUserName']], msg['Content'])
         
 
     def poll(self):
@@ -169,15 +192,18 @@ class Weixin():
         queryDict['uin'] = self.wxuin 
         queryDict['sid'] = self.wxsid
         queryDict['deviceid'] = self.deviceid
-        queryDict['synckey'] =  self.syncKey
         queryDict['_'] = int(time.time())
-        queryString = urllib.urlencode(queryDict)
-        url = "%s%s" % (uri, queryString)
         while True:
-            body = self.request.get(url)
-            if body == 'window.synccheck={retcode:"0",selector:"2"}':
-                self.webwxsync()
-            time.sleep(2)
+            queryDict['synckey'] =  self.syncKey
+            queryString = urllib.urlencode(queryDict)
+            url = "%s%s" % (uri, queryString)
+            try:
+                body = self.request.get(url)
+                if body == 'window.synccheck={retcode:"0",selector:"2"}':
+                    self.webwxsync()
+            except Exception,e:
+                pass
+            time.sleep(1)
 
 
 def main():
@@ -194,7 +220,8 @@ def main():
     print "登陆成功:)"
     key = login.getwxsidAndwxuin(loginRetXml)
     weixin = Weixin(key)
-    message = weixin.winit()
+    weixin.winit()
+    weixin.wxGetConcat()
     weixin.wxStatusNotify()
     weixin.poll()
 
